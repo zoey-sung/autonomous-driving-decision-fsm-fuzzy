@@ -1,5 +1,5 @@
 work
 z-output.txt
-_pycache_
+__pycache__
 .venv
 .idea
