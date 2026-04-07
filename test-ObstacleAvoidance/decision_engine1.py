@@ -81,7 +81,7 @@ class DecisionEngine:
         else:
             final_action = 1
 
-            # ================= 状态机逻辑 =================
+        # ================= 状态机逻辑 =================
         if self.current_state == DriveState.KL:
             if current_dist < mss:
                 self.cooldown = 0
@@ -91,30 +91,44 @@ class DecisionEngine:
 
         elif self.current_state == DriveState.PLC:
             self.start_lane = current_lane
-            can_go_left = False
-            can_go_right = False
+            best_lane_action = None
+            best_p_safe = -1.0
+            best_dist = -1.0  # 新增：记录最佳选择的绝对距离
 
+            # 1. 评估左侧车道
             if current_lane > 0:
+                left_dist = lane_data["left"]["dist"]
                 left_mss = self.calculate_mss(v_ego, lane_data["left"]["v_lead"])
-                left_p_safe = self.calculate_fuzzy_p_safe(lane_data["left"]["dist"], left_mss, v_ego,
+                left_p_safe = self.calculate_fuzzy_p_safe(left_dist, left_mss, v_ego,
                                                           lane_data["left"]["v_lead"])
+
                 if left_p_safe > self.P_SAFE_THRESHOLD:
-                    can_go_left = True
+                    best_p_safe = left_p_safe
+                    best_dist = left_dist
+                    best_lane_action = DriveState.LCL
 
+            # 2. 评估右侧车道并进行对比
             if current_lane < 2:
+                right_dist = lane_data["right"]["dist"]
                 right_mss = self.calculate_mss(v_ego, lane_data["right"]["v_lead"])
-                right_p_safe = self.calculate_fuzzy_p_safe(lane_data["right"]["dist"], right_mss, v_ego,
+                right_p_safe = self.calculate_fuzzy_p_safe(right_dist, right_mss, v_ego,
                                                            lane_data["right"]["v_lead"])
-                if right_p_safe > self.P_SAFE_THRESHOLD:
-                    can_go_right = True
 
-            if can_go_left:
-                self.current_state = DriveState.LCL
-                self.lane_change_initiated = False  # 切换状态时重置锁
-            elif can_go_right:
-                self.current_state = DriveState.LCR
+                if right_p_safe > self.P_SAFE_THRESHOLD:
+                    # 【核心修复】：如果右边更安全，或者一样安全但右边更空旷（距离更远），就选右边！
+                    if right_p_safe > best_p_safe or (right_p_safe == best_p_safe and right_dist > best_dist):
+                        best_p_safe = right_p_safe
+                        best_dist = right_dist
+                        best_lane_action = DriveState.LCR
+
+            # 根据最优选择更新状态
+            if best_lane_action:
+                self.current_state = best_lane_action
                 self.lane_change_initiated = False  # 切换状态时重置锁
             else:
+                # 左右都不可行，回到车道保持
+                mss = self.calculate_mss(v_ego, lane_data["current"]["v_lead"])
+                current_dist = lane_data["current"]["dist"]
                 if current_dist > mss * 4.0:
                     self.current_state = DriveState.KL
 

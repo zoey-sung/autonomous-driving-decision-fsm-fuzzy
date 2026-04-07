@@ -65,9 +65,9 @@ class AutoDriveSystem:
         print("🚦 障碍车初始化设置 (交互模式)")
         print(f"自车 (Ego) 初始状态: 默认位于 [1]号车道 (中间), 速度 {TEST_CONFIG['ego_init_speed']} m/s")
         print("车道编号说明:")
-        print("  [0] = 左侧车道")
+        print("  [0] = 右侧车道")
         print("  [1] = 中间车道")
-        print("  [2] = 右侧车道")
+        print("  [2] = 左侧车道")
         print("-" * 50)
 
         # 1. 先询问需要生成几辆障碍车
