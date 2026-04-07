@@ -107,31 +107,44 @@ class DecisionEngine:
 
         elif self.current_state == DriveState.PLC:
             self.start_lane = current_lane
-            can_go_left = False
-            can_go_right = False
 
+            # 【新增】用于记录全局最优选择的变量
+            best_lane_action = None
+            best_p_safe = -1.0
+            best_dist = -1.0
+
+            # 1. 评估左侧车道
             if current_lane > 0:
+                left_dist = lane_data["left"]["dist"]
                 left_mss = self.calculate_mss(v_ego, lane_data["left"]["v_lead"])
-                # 【修改】左侧安全概率使用模糊计算
-                left_p_safe = self.calculate_fuzzy_p_safe(lane_data["left"]["dist"], left_mss, v_ego,
+                left_p_safe = self.calculate_fuzzy_p_safe(left_dist, left_mss, v_ego,
                                                           lane_data["left"]["v_lead"])
+
+                # 如果左侧安全，暂定为最优解
                 if left_p_safe > self.P_SAFE_THRESHOLD:
-                    can_go_left = True
+                    best_p_safe = left_p_safe
+                    best_dist = left_dist
+                    best_lane_action = DriveState.LCL
 
+            # 2. 评估右侧车道并与当前最优解对比
             if current_lane < 2:
+                right_dist = lane_data["right"]["dist"]
                 right_mss = self.calculate_mss(v_ego, lane_data["right"]["v_lead"])
-                # 【修改】右侧安全概率使用模糊计算
-                right_p_safe = self.calculate_fuzzy_p_safe(lane_data["right"]["dist"], right_mss, v_ego,
+                right_p_safe = self.calculate_fuzzy_p_safe(right_dist, right_mss, v_ego,
                                                            lane_data["right"]["v_lead"])
-                if right_p_safe > self.P_SAFE_THRESHOLD:
-                    can_go_right = True
 
-            if can_go_left:
-                self.current_state = DriveState.LCL
-            elif can_go_right:
-                self.current_state = DriveState.LCR
+                if right_p_safe > self.P_SAFE_THRESHOLD:
+                    # 【核心对比逻辑】：如果右侧安全概率更高，或者一样安全但右侧可用距离更长，则推翻原有决定，选择右侧
+                    if right_p_safe > best_p_safe or (right_p_safe == best_p_safe and right_dist > best_dist):
+                        best_p_safe = right_p_safe
+                        best_dist = right_dist
+                        best_lane_action = DriveState.LCR
+
+            # 3. 做出最终决策
+            if best_lane_action:
+                self.current_state = best_lane_action
             else:
-                # 【调优】拓宽滞回区间：除非前车跑得足够远（2.0倍MSS），否则不要轻易退回KL
+                # 【调优】拓宽滞回区间：左右都没法变道时，只有前方非常空旷（2.0倍MSS）才退回巡航，避免状态频繁跳变
                 if current_dist > mss * 2.0:
                     self.current_state = DriveState.KL
 
