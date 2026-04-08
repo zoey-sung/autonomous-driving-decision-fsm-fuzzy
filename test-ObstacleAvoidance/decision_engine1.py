@@ -62,6 +62,9 @@ class DecisionEngine:
         return round(numerator / denominator, 2)
 
     def get_action(self, v_ego, lane_data, current_lane, lateral_vel):
+        # 【新增1】在最开头记录这一帧开始时的状态
+        previous_state = self.current_state
+
         current_dist = lane_data["current"]["dist"]
         v_lead = lane_data["current"]["v_lead"]
 
@@ -83,9 +86,6 @@ class DecisionEngine:
 
         # ================= 状态机逻辑 =================
         if self.current_state == DriveState.KL:
-            # 【修复1】移除 self.cooldown = 0 的强制重置机制。
-            # 如果变道后发现新车道也有危险，系统上方的 final_action = 4 (刹车) 会自动生效避险，
-            # 必须严格等待 cooldown 结束后，才能发起下一次变道，避免车辆失控打转。
             if current_dist < mss * 4.0 and self.cooldown == 0:
                 self.current_state = DriveState.PLC
 
@@ -93,72 +93,112 @@ class DecisionEngine:
             self.start_lane = current_lane
             best_lane_action = None
             best_p_safe = -1.0
-            best_dist = -1.0  # 新增：记录最佳选择的绝对距离
+            best_dist = -1.0
+
+            current_mss = self.calculate_mss(v_ego, lane_data["current"]["v_lead"])
+            current_p_safe = self.calculate_fuzzy_p_safe(current_dist, current_mss, v_ego,
+                                                         lane_data["current"]["v_lead"])
 
             # 1. 评估左侧车道
             if current_lane > 0:
                 left_dist = lane_data["left"]["dist"]
                 left_mss = self.calculate_mss(v_ego, lane_data["left"]["v_lead"])
-                left_p_safe = self.calculate_fuzzy_p_safe(left_dist, left_mss, v_ego,
-                                                          lane_data["left"]["v_lead"])
+                left_p_safe = self.calculate_fuzzy_p_safe(left_dist, left_mss, v_ego, lane_data["left"]["v_lead"])
 
-                if left_p_safe > self.P_SAFE_THRESHOLD:
+                if left_p_safe > self.P_SAFE_THRESHOLD and (
+                        left_p_safe > current_p_safe or left_dist > current_dist + 5.0):
                     best_p_safe = left_p_safe
                     best_dist = left_dist
                     best_lane_action = DriveState.LCL
 
-            # 2. 评估右侧车道并进行对比
+            # 2. 评估右侧车道
             if current_lane < 2:
                 right_dist = lane_data["right"]["dist"]
                 right_mss = self.calculate_mss(v_ego, lane_data["right"]["v_lead"])
-                right_p_safe = self.calculate_fuzzy_p_safe(right_dist, right_mss, v_ego,
-                                                           lane_data["right"]["v_lead"])
+                right_p_safe = self.calculate_fuzzy_p_safe(right_dist, right_mss, v_ego, lane_data["right"]["v_lead"])
 
-                if right_p_safe > self.P_SAFE_THRESHOLD:
-                    # 【核心修复】：如果右边更安全，或者一样安全但右边更空旷（距离更远），就选右边！
+                if right_p_safe > self.P_SAFE_THRESHOLD and (
+                        right_p_safe > current_p_safe or right_dist > current_dist + 5.0):
                     if right_p_safe > best_p_safe or (right_p_safe == best_p_safe and right_dist > best_dist):
                         best_p_safe = right_p_safe
                         best_dist = right_dist
                         best_lane_action = DriveState.LCR
 
-            # 根据最优选择更新状态
+            # 3. 结果应用
             if best_lane_action:
                 self.current_state = best_lane_action
-                self.lane_change_initiated = False  # 切换状态时重置锁
+                self.lane_change_initiated = False
             else:
-                # 左右都不可行，回到车道保持
-                mss = self.calculate_mss(v_ego, lane_data["current"]["v_lead"])
-                current_dist = lane_data["current"]["dist"]
-                if current_dist > mss * 4.0:
+                if current_dist < mss * 1.5:
+                    self.current_state = DriveState.ABORT
+                elif current_dist > mss * 4.0:
                     self.current_state = DriveState.KL
 
+        elif self.current_state == DriveState.ABORT:
+            if current_dist > mss * 2.0:
+                self.current_state = DriveState.KL
+                self.cooldown = 10
+            else:
+                pass
+
         elif self.current_state in [DriveState.LCL, DriveState.LCR]:
-            # 【修复2】升级变道完成的判定条件：
-            # 不仅要求 current_lane 发生改变（跨越车道线），
-            # 还要求 lateral_vel（横向速度）小于 0.5，确保车身已经在新车道内完全回正。
             is_arrived = (current_lane != self.start_lane) and (abs(lateral_vel) < 0.5)
 
             if is_arrived:
-                # 变道已跨线且车身回正完成
                 self.current_state = DriveState.KL
                 self.cooldown = 15
                 self.lane_change_initiated = False
             else:
-                # 如果是变道中的第一帧，发送变道动作，然后锁死
                 if not self.lane_change_initiated:
                     action = 0 if self.current_state == DriveState.LCL else 2
                     self.lane_change_initiated = True
                     return action, mss, p_safe
                 else:
-                    # 变道指令已发送，车辆正在侧向漂移或回正中，此时返回巡航动作（保持速度/减速）
                     return final_action, mss, p_safe
+
+        # ==========================================================
+        # 【新增2】全景快照打印区：一旦状态发生切换，立刻打印全场态势
+        # ==========================================================
+        if previous_state != self.current_state:
+            print("\n" + "!" * 70)
+            print(f"🔀 [决策触发] 状态切换: {previous_state.value}  ==>  {self.current_state.value}")
+            print(f"🚗 自车状态: 当前车道 [{current_lane}] | 车速: {v_ego:.2f} m/s")
+            print("-" * 70)
+
+            # 【提取并打印本车道数据】
+            c_dist = lane_data["current"]["dist"]
+            c_v = lane_data["current"]["v_lead"]
+            c_mss = self.calculate_mss(v_ego, c_v)
+            c_p = self.calculate_fuzzy_p_safe(c_dist, c_mss, v_ego, c_v)
+            print(
+                f"  🎯 [本车道] 纵距: {c_dist:>5.1f}m | 前车速: {c_v:>4.1f}m/s | 安全底线(MSS): {c_mss:>4.1f}m | 概率: {c_p:.2f}")
+
+            # 【提取并打印左车道数据】
+            if current_lane > 0:
+                l_dist = lane_data["left"]["dist"]
+                l_v = lane_data["left"]["v_lead"]
+                l_mss = self.calculate_mss(v_ego, l_v)
+                l_p = self.calculate_fuzzy_p_safe(l_dist, l_mss, v_ego, l_v)
+                print(
+                    f"  👈 [左车道] 纵距: {l_dist:>5.1f}m | 前车速: {l_v:>4.1f}m/s | 安全底线(MSS): {l_mss:>4.1f}m | 概率: {l_p:.2f}")
+            else:
+                print("  👈 [左车道] 无 (自车已在最左侧)")
+
+            # 【提取并打印右车道数据】
+            if current_lane < 2:
+                r_dist = lane_data["right"]["dist"]
+                r_v = lane_data["right"]["v_lead"]
+                r_mss = self.calculate_mss(v_ego, r_v)
+                r_p = self.calculate_fuzzy_p_safe(r_dist, r_mss, v_ego, r_v)
+                print(
+                    f"  👉 [右车道] 纵距: {r_dist:>5.1f}m | 前车速: {r_v:>4.1f}m/s | 安全底线(MSS): {r_mss:>4.1f}m | 概率: {r_p:.2f}")
+            else:
+                print("  👉 [右车道] 无 (自车已在最右侧)")
+            print("!" * 70 + "\n")
 
         # ================= 修复后的 action_map =================
         action_map = {
-            # 【修复】彻底删除 LCL 和 LCR 的字典映射！
-            # 因为变道动作已经在上方的分支中被独立锁死并 return 了。
-            # 留在这里会导致刚切入 LCR 状态的那一帧发生“状态穿透”，意外多发一次变道指令。
-            DriveState.ABORT: 1,
+            DriveState.ABORT: final_action,
             DriveState.KL: final_action,
             DriveState.PLC: final_action
         }
