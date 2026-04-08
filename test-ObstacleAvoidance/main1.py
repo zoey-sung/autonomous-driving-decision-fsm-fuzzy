@@ -12,7 +12,7 @@ TEST_CONFIG = {
     "other_vehicle_speed": 0,
     "safe_distance_mss": 5.0,
     "fuzzy_margin_scale": 5.0,
-    "vehicles_count": 20,  # 【关键修改】将原来的 20 改为 0，彻底关闭底层随机刷车机制
+    "vehicles_count": 30,  # 【关键修改】将原来的 20 改为 0，彻底关闭底层随机刷车机制
     "ego_spacing": 2.0,
     "lanes_count": 3
 }

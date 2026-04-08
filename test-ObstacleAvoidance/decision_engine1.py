@@ -83,10 +83,10 @@ class DecisionEngine:
 
         # ================= 状态机逻辑 =================
         if self.current_state == DriveState.KL:
-            if current_dist < mss:
-                self.cooldown = 0
-                self.current_state = DriveState.PLC
-            elif current_dist < mss * 4.0 and self.cooldown == 0:
+            # 【修复1】移除 self.cooldown = 0 的强制重置机制。
+            # 如果变道后发现新车道也有危险，系统上方的 final_action = 4 (刹车) 会自动生效避险，
+            # 必须严格等待 cooldown 结束后，才能发起下一次变道，避免车辆失控打转。
+            if current_dist < mss * 4.0 and self.cooldown == 0:
                 self.current_state = DriveState.PLC
 
         elif self.current_state == DriveState.PLC:
@@ -133,26 +133,31 @@ class DecisionEngine:
                     self.current_state = DriveState.KL
 
         elif self.current_state in [DriveState.LCL, DriveState.LCR]:
-            is_arrived = (current_lane != self.start_lane)
+            # 【修复2】升级变道完成的判定条件：
+            # 不仅要求 current_lane 发生改变（跨越车道线），
+            # 还要求 lateral_vel（横向速度）小于 0.5，确保车身已经在新车道内完全回正。
+            is_arrived = (current_lane != self.start_lane) and (abs(lateral_vel) < 0.5)
 
             if is_arrived:
-                # 变道已跨线完成
+                # 变道已跨线且车身回正完成
                 self.current_state = DriveState.KL
                 self.cooldown = 15
                 self.lane_change_initiated = False
             else:
-                # 【关键修复】如果是变道中的第一帧，发送变道动作，然后锁死
+                # 如果是变道中的第一帧，发送变道动作，然后锁死
                 if not self.lane_change_initiated:
                     action = 0 if self.current_state == DriveState.LCL else 2
                     self.lane_change_initiated = True
                     return action, mss, p_safe
                 else:
-                    # 变道指令已发送，车辆正在侧向漂移中，此时返回巡航动作（保持速度）
+                    # 变道指令已发送，车辆正在侧向漂移或回正中，此时返回巡航动作（保持速度/减速）
                     return final_action, mss, p_safe
 
+        # ================= 修复后的 action_map =================
         action_map = {
-            DriveState.LCL: 0,
-            DriveState.LCR: 2,
+            # 【修复】彻底删除 LCL 和 LCR 的字典映射！
+            # 因为变道动作已经在上方的分支中被独立锁死并 return 了。
+            # 留在这里会导致刚切入 LCR 状态的那一帧发生“状态穿透”，意外多发一次变道指令。
             DriveState.ABORT: 1,
             DriveState.KL: final_action,
             DriveState.PLC: final_action
