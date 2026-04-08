@@ -10,7 +10,7 @@ class DriveState(Enum):
 
 
 class DecisionEngine:
-    def __init__(self, test_safe_dist=5.0, fuzzy_scale=5.0, target_speed=10.0):
+    def __init__(self, test_safe_dist=7.0, fuzzy_scale=5.0, target_speed=10.0):
         self.current_state = DriveState.KL
         self.MAX_DECEL = 8.5
         self.SAFE_TIME_GAP = 0.8
@@ -86,7 +86,10 @@ class DecisionEngine:
 
         # ================= 状态机逻辑 =================
         if self.current_state == DriveState.KL:
-            if current_dist < mss * 4.0 and self.cooldown == 0:
+            # 【修复：增加进入超车状态的门槛】
+            # 1. 距离太近（< mss * 1.8）不许想超车，安心刹车即可
+            # 2. 车速太慢（< 0.5）不许想超车，先起步再说
+            if mss * 1.8 < current_dist < mss * 4.0 and v_ego > 0.5 and self.cooldown == 0:
                 self.current_state = DriveState.PLC
 
         elif self.current_state == DriveState.PLC:
@@ -99,43 +102,59 @@ class DecisionEngine:
             current_p_safe = self.calculate_fuzzy_p_safe(current_dist, current_mss, v_ego,
                                                          lane_data["current"]["v_lead"])
 
-            # 1. 评估左侧车道
-            if current_lane > 0:
-                left_dist = lane_data["left"]["dist"]
-                left_mss = self.calculate_mss(v_ego, lane_data["left"]["v_lead"])
-                left_p_safe = self.calculate_fuzzy_p_safe(left_dist, left_mss, v_ego, lane_data["left"]["v_lead"])
+            # ==========================================
+            # 【修复1：变道跑道锁】
+            # 汽车变道需要前方的物理空间（跑道）。
+            # 设定：至少需要 1.8 倍的 MSS 距离，才允许打方向盘变道。
+            # 否则，强行变道一定会蹭到前车屁股。
+            # ==========================================
+            if current_dist > mss * 1.8:
+                # 1. 评估左侧车道
+                if current_lane > 0:
+                    left_dist = lane_data["left"]["dist"]
+                    left_mss = self.calculate_mss(v_ego, lane_data["left"]["v_lead"])
+                    left_p_safe = self.calculate_fuzzy_p_safe(left_dist, left_mss, v_ego, lane_data["left"]["v_lead"])
 
-                if left_p_safe > self.P_SAFE_THRESHOLD and (
-                        left_p_safe > current_p_safe or left_dist > current_dist + 5.0):
-                    best_p_safe = left_p_safe
-                    best_dist = left_dist
-                    best_lane_action = DriveState.LCL
+                    if left_p_safe > self.P_SAFE_THRESHOLD and (
+                            left_p_safe > current_p_safe or left_dist > current_dist + 5.0):
+                        best_p_safe = left_p_safe
+                        best_dist = left_dist
+                        best_lane_action = DriveState.LCL
 
-            # 2. 评估右侧车道
-            if current_lane < 2:
-                right_dist = lane_data["right"]["dist"]
-                right_mss = self.calculate_mss(v_ego, lane_data["right"]["v_lead"])
-                right_p_safe = self.calculate_fuzzy_p_safe(right_dist, right_mss, v_ego, lane_data["right"]["v_lead"])
+                # 2. 评估右侧车道
+                if current_lane < 2:
+                    right_dist = lane_data["right"]["dist"]
+                    right_mss = self.calculate_mss(v_ego, lane_data["right"]["v_lead"])
+                    right_p_safe = self.calculate_fuzzy_p_safe(right_dist, right_mss, v_ego,
+                                                               lane_data["right"]["v_lead"])
 
-                if right_p_safe > self.P_SAFE_THRESHOLD and (
-                        right_p_safe > current_p_safe or right_dist > current_dist + 5.0):
-                    if right_p_safe > best_p_safe or (right_p_safe == best_p_safe and right_dist > best_dist):
-                        best_p_safe = right_p_safe
-                        best_dist = right_dist
-                        best_lane_action = DriveState.LCR
+                    if right_p_safe > self.P_SAFE_THRESHOLD and (
+                            right_p_safe > current_p_safe or right_dist > current_dist + 5.0):
+                        if right_p_safe > best_p_safe or (right_p_safe == best_p_safe and right_dist > best_dist):
+                            best_p_safe = right_p_safe
+                            best_dist = right_dist
+                            best_lane_action = DriveState.LCR
 
             # 3. 结果应用
             if best_lane_action:
                 self.current_state = best_lane_action
                 self.lane_change_initiated = False
             else:
-                if current_dist < mss * 1.5:
+                # 【修改】如果距离小于 1.8 倍 MSS (约12-15米)，不管旁边多空，直接放弃变道幻想，切入急刹避险！
+                if current_dist < mss * 1.8:
                     self.current_state = DriveState.ABORT
                 elif current_dist > mss * 4.0:
                     self.current_state = DriveState.KL
 
         elif self.current_state == DriveState.ABORT:
-            if current_dist > mss * 2.0:
+            # 【关键修复2】使用 target_speed 计算绝对安全退出距离，打破“刹车导致距离缩水”的死循环
+            safe_exit_dist = self.calculate_mss(self.target_speed, lane_data["current"]["v_lead"]) * 2.0
+
+            if current_dist > safe_exit_dist:
+                self.current_state = DriveState.KL
+                self.cooldown = 10
+            # 【新增修复】如果车速已经极低（基本刹停），且距离大于物理极限（比如6米以上），切回KL维持刹车，避免死锁
+            elif v_ego <= 0.5 and current_dist > 6.0:
                 self.current_state = DriveState.KL
                 self.cooldown = 10
             else:
@@ -149,12 +168,33 @@ class DecisionEngine:
                 self.cooldown = 15
                 self.lane_change_initiated = False
             else:
-                if not self.lane_change_initiated:
-                    action = 0 if self.current_state == DriveState.LCL else 2
-                    self.lane_change_initiated = True
-                    return action, mss, p_safe
+                # ==========================================
+                # 【关键修复：低速极限超车适配】
+                # 动态计算防撞网倍率：高速保持 1.5 倍冗余，低速压缩到 1.1 倍
+                # 这样在 5m/s 的低速下，允许车辆贴到 16.5 米处才放弃变道
+                # ==========================================
+                if v_ego < 8.0:
+                    abort_multiplier = 1.1  # 低速模式：极短刹车距离，允许极限微操
                 else:
-                    return final_action, mss, p_safe
+                    abort_multiplier = 1.5  # 高速模式：保持足够的安全回撤空间
+
+                if current_dist < mss * abort_multiplier:
+                    self.current_state = DriveState.ABORT
+                    self.lane_change_initiated = False
+                else:
+                    if not self.lane_change_initiated:
+                        action = 0 if self.current_state == DriveState.LCL else 2
+                        self.lane_change_initiated = True
+                        return action, mss, p_safe
+                    else:
+                        # ==========================================
+                        # 【关键修复：屏蔽基础逻辑的过早刹车】
+                        # 既然我们允许低速下贴近到 1.1 倍，就绝不能让基础逻辑在 1.2 倍时提前踩死刹车！
+                        # ==========================================
+                        safe_act = final_action
+                        if final_action == 4 and current_dist > mss * abort_multiplier:
+                            safe_act = 1  # 强行改为滑行，让它有胆子继续变道
+                        return safe_act, mss, p_safe
 
         # ==========================================================
         # 【新增2】全景快照打印区：一旦状态发生切换，立刻打印全场态势
@@ -198,7 +238,7 @@ class DecisionEngine:
 
         # ================= 修复后的 action_map =================
         action_map = {
-            DriveState.ABORT: final_action,
+            DriveState.ABORT: 4,  # 【关键修复1】既然是回撤避险，就直接一脚刹车踩死！不要再听 final_action 的滑行瞎指挥
             DriveState.KL: final_action,
             DriveState.PLC: final_action
         }
