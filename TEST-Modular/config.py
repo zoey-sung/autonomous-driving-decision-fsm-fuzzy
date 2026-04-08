@@ -4,7 +4,7 @@ class SimConfig:
     # ================= 车辆与控制参数 =================
     EGO_INIT_SPEED = 1.0        # 自车初始速度 (m/s) - 提高到5.0以支持正常变道
     OTHER_VEHICLE_SPEED = 0.0   # 障碍车速度 (m/s)
-    SAFE_DISTANCE_MSS = 4.0     # 基础防撞底线距离 (m)
+    SAFE_DISTANCE_MSS = 2.0     # 基础防撞底线距离 (m)
     FUZZY_MARGIN_SCALE = 5.0    # 模糊逻辑余量尺度
 
     # ================= 环境与道路参数 =================

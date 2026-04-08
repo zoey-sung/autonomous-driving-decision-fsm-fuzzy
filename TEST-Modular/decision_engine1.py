@@ -75,7 +75,8 @@ class DecisionEngine:
             self.cooldown -= 1
 
         # 基础巡航与紧急减速指令
-        if current_dist < mss * 1.2:
+        # 【修复】加上 5.0 的车身长度补偿，否则 mss * 1.2 在低速下小于车长，必撞无疑
+        if current_dist < (mss * 1.2) + 5.0:
             final_action = 4
         elif v_ego < self.target_speed - 1.0:
             final_action = 3
@@ -135,16 +136,23 @@ class DecisionEngine:
                             best_dist = right_dist
                             best_lane_action = DriveState.LCR
 
-            # 3. 结果应用
-            if best_lane_action:
-                self.current_state = best_lane_action
-                self.lane_change_initiated = False
-            else:
-                # 【修改】如果距离小于 1.8 倍 MSS (约12-15米)，不管旁边多空，直接放弃变道幻想，切入急刹避险！
-                if current_dist < mss * 1.8:
-                    self.current_state = DriveState.ABORT
-                elif current_dist > mss * 4.0:
-                    self.current_state = DriveState.KL
+                # ==========================================
+                # ✅ 修复：与 1 和 2 平齐，不管评估哪个车道，最后都要走这里
+                # ==========================================
+                # 3. 结果应用
+                if best_lane_action:
+                    self.current_state = best_lane_action
+                    self.lane_change_initiated = False
+                else:
+                    # 【修复】使用绝对速度来计算安全空间，防止刹车后产生“空间很大”的错觉
+                    absolute_mss = self.calculate_mss(self.target_speed, lane_data["current"]["v_lead"])
+
+                    # 【修改】如果距离小于 1.8 倍 MSS (加上车身补偿)，放弃变道幻想
+                    if current_dist < (mss * 1.8) + 5.0:
+                        self.current_state = DriveState.ABORT
+                    # 【修改】必须大于“绝对安全距离”的倍数，才允许切回 KL
+                    elif current_dist > absolute_mss * 4.0:
+                        self.current_state = DriveState.KL
 
         elif self.current_state == DriveState.ABORT:
             # 【关键修复2】使用 target_speed 计算绝对安全退出距离，打破“刹车导致距离缩水”的死循环
@@ -154,7 +162,7 @@ class DecisionEngine:
                 self.current_state = DriveState.KL
                 self.cooldown = 10
             # 【新增修复】如果车速已经极低（基本刹停），且距离大于物理极限（比如6米以上），切回KL维持刹车，避免死锁
-            elif v_ego <= 0.5 and current_dist > 6.0:
+            elif v_ego <= 0.5 and current_dist > 8.0:
                 self.current_state = DriveState.KL
                 self.cooldown = 10
             else:
@@ -205,33 +213,30 @@ class DecisionEngine:
             print(f"🚗 自车状态: 当前车道 [{current_lane}] | 车速: {v_ego:.2f} m/s")
             print("-" * 70)
 
-            # 【提取并打印本车道数据】
+            # 辅助函数：把中心距转成净距，如果没车(100)就不减
+            def to_gap(d): return max(0.0, d - 5.0) if d < 99.0 else 100.0
+
             c_dist = lane_data["current"]["dist"]
             c_v = lane_data["current"]["v_lead"]
             c_mss = self.calculate_mss(v_ego, c_v)
             c_p = self.calculate_fuzzy_p_safe(c_dist, c_mss, v_ego, c_v)
-            print(
-                f"  🎯 [本车道] 纵距: {c_dist:>5.1f}m | 前车速: {c_v:>4.1f}m/s | 安全底线(MSS): {c_mss:>4.1f}m | 概率: {c_p:.2f}")
+            print(f"  🎯 [本车道] 净距: {to_gap(c_dist):>5.1f}m | 前车速: {c_v:>4.1f}m/s | 安全底线: {to_gap(c_mss):>4.1f}m | 概率: {c_p:.2f}")
 
-            # 【提取并打印左车道数据】
             if current_lane > 0:
                 l_dist = lane_data["left"]["dist"]
                 l_v = lane_data["left"]["v_lead"]
                 l_mss = self.calculate_mss(v_ego, l_v)
                 l_p = self.calculate_fuzzy_p_safe(l_dist, l_mss, v_ego, l_v)
-                print(
-                    f"  👈 [左车道] 纵距: {l_dist:>5.1f}m | 前车速: {l_v:>4.1f}m/s | 安全底线(MSS): {l_mss:>4.1f}m | 概率: {l_p:.2f}")
+                print(f"  👈 [左车道] 净距: {to_gap(l_dist):>5.1f}m | 前车速: {l_v:>4.1f}m/s | 安全底线: {to_gap(l_mss):>4.1f}m | 概率: {l_p:.2f}")
             else:
                 print("  👈 [左车道] 无 (自车已在最左侧)")
 
-            # 【提取并打印右车道数据】
             if current_lane < 2:
                 r_dist = lane_data["right"]["dist"]
                 r_v = lane_data["right"]["v_lead"]
                 r_mss = self.calculate_mss(v_ego, r_v)
                 r_p = self.calculate_fuzzy_p_safe(r_dist, r_mss, v_ego, r_v)
-                print(
-                    f"  👉 [右车道] 纵距: {r_dist:>5.1f}m | 前车速: {r_v:>4.1f}m/s | 安全底线(MSS): {r_mss:>4.1f}m | 概率: {r_p:.2f}")
+                print(f"  👉 [右车道] 净距: {to_gap(r_dist):>5.1f}m | 前车速: {r_v:>4.1f}m/s | 安全底线: {to_gap(r_mss):>4.1f}m | 概率: {r_p:.2f}")
             else:
                 print("  👉 [右车道] 无 (自车已在最右侧)")
             print("!" * 70 + "\n")

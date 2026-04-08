@@ -31,6 +31,10 @@ class Visualizer:
         img_pil = Image.fromarray(cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB))
         draw = ImageDraw.Draw(img_pil)
 
+        # 【新增】把给用户的提示转换为“净距” (减去两车各一半长度共5米)
+        display_dist = max(0.0, dist - 5.0) if dist < 99.0 else 100.0
+        display_mss = max(0.0, mss - 5.0)
+
         # 【新增】暂停时的 UI 交互提示
         if paused:
             draw.text((screen_width // 2 - 180, 80), "⏸️ 仿真已暂停: 请使用鼠标点击车道放置障碍车", font=self.font,
@@ -65,32 +69,41 @@ class Visualizer:
                 draw.text((pixel_x - 15, bottom_y + 5), f"{tick}m", font=self.small_font, fill=(200, 200, 200))
 
         # ==========================================
-
+        # 系统信息文本定义
+        # ==========================================
         info_lines = [
             f"系统状态: {state_name}",
-            f"本车道纵距: {dist:.1f}m (安全线: {mss:.1f}m)",
+            f"前方净距: {display_dist:.1f}m (安全底线: {display_mss:.1f}m)",
             f"安全概率: {p_safe:.2f} (门限: 0.70)",
-            f"帧延迟: {delay_ms}ms (空格暂停, +/- 调速)"
+            f"帧延迟: {delay_ms}ms (空格暂停, +/-调速, F键脱困)"  # 提示加上F键
         ]
 
-        if lane_y_coords:
-            for lane_id, y_pos in lane_y_coords:
-                draw.text((15, y_pos - 15), f"车道 [{lane_id}]", font=self.font, fill=(200, 200, 200))
-
-        for i, line in enumerate(info_lines):
-            color = (0, 255, 0) if (i != 1 or dist > mss) else (255, 0, 0)
-            draw.text((20, 20 + i * 30), line, font=self.font, fill=color)
-
+        # ==========================================
+        # 【修改 1】第一步：先绘制车辆身上的悬浮文本 (底层)
+        # 这样当车辆移动到左上角时，文字会被后续的 HUD 背景盖住
+        # ==========================================
         if vehicle_list:
             for v in vehicle_list:
                 speed_text = f"{v['speed']:.0f} km/h"
                 text_color = (255, 255, 0) if v["is_ego"] else (255, 255, 255)
                 draw.text((v["x"] - 30, v["y"] - 45), speed_text, font=self.font, fill=text_color)
 
-                # 【修改】不再屏蔽后方车辆，只要不是自车，被点出来立刻显示距离！
                 if not v["is_ego"]:
                     dist_text = f"纵距: {v['long_dist']:.1f} m"
-                    draw.text((v["x"] - 30, v["y"] - 20), dist_text, font=self.font, fill=(0, 255, 255))
+                    draw.text((v["x"] - 30, v["y"] - 20), dist_text, font=self.font, fill=(255, 0, 0))
+
+        # ==========================================
+        # 【修改 2】第二步：再绘制深灰色的 HUD 背景底板和文字 (顶层)
+        # ==========================================
+        draw.rectangle([(10, 10), (420, 140)], fill=(30, 30, 30))
+
+        if lane_y_coords:
+            for lane_id, y_pos in lane_y_coords:
+                draw.text((15, y_pos - 15), f"车道 [{lane_id}]", font=self.font, fill=(200, 200, 200))
+
+        for i, line in enumerate(info_lines):
+            color = (0, 255, 0) if (i != 1 or display_dist > display_mss) else (255, 0, 0)
+            draw.text((20, 20 + i * 30), line, font=self.font, fill=color)
 
         return cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
 

@@ -68,10 +68,14 @@ class ScenarioManager:
         """将鼠标像素点击转换为实车空投"""
         ego = self.env.unwrapped.vehicle
         config = self.env.unwrapped.config
-        center_x, center_y = ego.position[0], ego.position[1]
 
-        world_x = (px - config["screen_width"] / 2) / config["scaling"] + center_x
-        world_y = (py - config["screen_height"] / 2) / config["scaling"] + center_y
+        # X 轴依然跟随自车，这样可以往前/往后扔车
+        world_x = (px - config["screen_width"] / 2) / config["scaling"] + ego.position[0]
+
+        # ==========================================
+        # 【修改 4】Y 轴计算基于锁死的中心车道(4.0)，不再加上 ego.position[1]
+        # ==========================================
+        world_y = (py - config["screen_height"] / 2) / config["scaling"] + 4.0
 
         lane_idx = int(round(world_y / 4.0))
         lane_idx = max(0, min(SimConfig.LANES_COUNT - 1, lane_idx))
