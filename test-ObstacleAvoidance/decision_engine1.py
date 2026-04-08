@@ -89,7 +89,7 @@ class DecisionEngine:
             # 【修复：增加进入超车状态的门槛】
             # 1. 距离太近（< mss * 1.8）不许想超车，安心刹车即可
             # 2. 车速太慢（< 0.5）不许想超车，先起步再说
-            if mss * 1.8 < current_dist < mss * 4.0 and v_ego > 0.5 and self.cooldown == 0:
+            if mss * 1.8 < current_dist < mss * 4.0 and v_ego >= 0.5 and self.cooldown == 0:
                 self.current_state = DriveState.PLC
 
         elif self.current_state == DriveState.PLC:

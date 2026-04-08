@@ -10,7 +10,7 @@ TEST_CONFIG = {
     "is_test_mode": True,
     "ego_init_speed": 1.0,
     "other_vehicle_speed": 0,
-    "safe_distance_mss": 3.0,  # 同步修改为7.0，匹配决策引擎的默认值
+    "safe_distance_mss": 6.0,  # 同步修改为7.0，匹配决策引擎的默认值
     "fuzzy_margin_scale": 5.0,
     "vehicles_count": 0,  # 【修复】真正改为 0，彻底关闭底层随机刷车机制
     "ego_spacing": 2.0,
