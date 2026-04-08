@@ -12,7 +12,7 @@ TEST_CONFIG = {
     "other_vehicle_speed": 0,
     "safe_distance_mss": 5.0,
     "fuzzy_margin_scale": 5.0,
-    "vehicles_count": 30,  # 【关键修改】将原来的 20 改为 0，彻底关闭底层随机刷车机制
+    "vehicles_count": 0,  # 【修复】真正改为 0，彻底关闭底层随机刷车机制
     "ego_spacing": 2.0,
     "lanes_count": 3
 }
@@ -261,7 +261,28 @@ class AutoDriveSystem:
                 self.frame_delay = max(self.frame_delay - 20, 10)
 
             if not self.paused:
+                # ==========================================
+                # 【终极防鬼畜锁：指令拦截】
+                # action 4 每次会减速约 1.38 m/s。
+                # 如果当前车速 < 1.5 m/s，说明已经吃不下一脚重刹了，
+                # 直接强行切断动力，把车死死钉在原地，绝对禁止倒车！
+                # ==========================================
+                if ego.speed <= 1.5 and action == 4:
+                    action = 1
+                    ego.speed = 0
+                    ego.target_speed = 0
+                    if hasattr(ego, 'velocity'):
+                        ego.velocity[0] = 0
+
+                # 用拦截后安全的 action 去驱动环境
                 _, _, terminated, truncated, info = self.env.step(action)
+
+                # （原本 step 后的清理代码可以保留作为最后一道保险）
+                if ego.target_speed < 0:
+                    ego.target_speed = 0
+                if ego.speed < 0:
+                    ego.speed = 0
+                # ==========================================
 
                 if info.get("crashed") or abs(p_data["ego_heading"]) > 1.5 or terminated or truncated:
                     reason = "碰撞" if info.get("crashed") else "失控/越界"
