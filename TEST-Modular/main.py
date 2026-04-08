@@ -71,12 +71,19 @@ class AutoDriveSystem:
                 bg_color = [int(x) for x in frame[0, 0]]
                 frame = cv2.warpAffine(frame, M, (frame.shape[1], frame.shape[0]), borderValue=bg_color)
 
-            # 锁定其他车辆速度
-            for v in self.env.unwrapped.road.vehicles:
-                if v is not ego:
-                    v.speed = SimConfig.OTHER_VEHICLE_SPEED
-                    if hasattr(v, 'target_speed'):
-                        v.target_speed = SimConfig.OTHER_VEHICLE_SPEED
+                # ==========================================
+                # 【修复 1 & 2 预处理】强行注入速度，并强制车头回正
+                # ==========================================
+                for v in self.env.unwrapped.road.vehicles:
+                    if v is not ego:
+                        v.speed = SimConfig.OTHER_VEHICLE_SPEED
+                        v.heading = 0.0  # 绝对笔直，不允许歪头
+                        if hasattr(v, 'target_speed'):
+                            v.target_speed = SimConfig.OTHER_VEHICLE_SPEED
+
+                        # 👇👇👇 [新增] 彻底抹除障碍车的变道意图 👇👇👇
+                        if hasattr(v, 'target_lane_index'):
+                            v.target_lane_index = v.lane_index
 
             p_data = self.perception.get_decision_data()
             v_list = self.perception.get_visual_data()
@@ -117,38 +124,60 @@ class AutoDriveSystem:
             elif key in [ord('='), ord('+')]: self.frame_delay = min(self.frame_delay + 20, 1000)
             elif key == ord('-'): self.frame_delay = max(self.frame_delay - 20, 10)
             elif key == ord('f') or key == ord('F'):
-                self.brain.current_state = DriveState.KL
-                ego.speed = SimConfig.EGO_INIT_SPEED
-                ego.target_speed = SimConfig.EGO_INIT_SPEED
-                print("\n🚀 [手动干预] 已强制解除 ABORT 状态，注入初始速度重新起步！")
+                print("\n🔄 [手动干预] 触发全局重置！画面已焕然一新！")
+                self.reset_env()  # 调用你已经写好的重置函数
+                continue  # 关键：跳过本帧剩余的渲染和物理运算，直接进入全新的下一帧
 
+            # 5. 执行与防暴冲兜底
             if not self.paused:
+                # ===================== 【核心修复：彻底接管底层油门】 =====================
+                # 剥夺 highway-env 对加减速的控制权。
+                # 如果决策是加速(3)或刹车(4)，对环境只发送 1(巡航)，加减速由我们手动接管
                 safe_action = action
-                if action == 4:
+                if action in [3, 4]:
                     safe_action = 1
+
+                frozen_y_positions = {v: v.position[1] for v in self.env.unwrapped.road.vehicles if v is not ego}
+
+                # 🚨 必须放在 env.step 之前！提前改写属性，让引擎用新速度去算物理位移 🚨
+                # ===================== 【自车速度强制覆写】 =====================
+                if action == 4:
+                    # 刹车状态：平滑减速，防止被后车追尾（不再使用瞬间 -5.0 的死亡刹车）
                     ego.target_speed = 0.0
-                    ego.speed = max(0.0, ego.speed - SimConfig.EMERGENCY_DECEL)
+                    ego.speed = max(0.0, ego.speed - 1.0)
+                else:
+                    # 巡航、加速或变道状态：强行把引擎想要飙升的速度拉回到 Config 设定值
+                    ego.target_speed = SimConfig.EGO_INIT_SPEED
+                    if ego.speed < SimConfig.EGO_INIT_SPEED:
+                        # 如果之前刹车了，现在平滑起步恢复速度
+                        ego.speed = min(SimConfig.EGO_INIT_SPEED, ego.speed + 0.5)
+                    elif ego.speed > SimConfig.EGO_INIT_SPEED:
+                        # 强行压制底层引擎的暴冲
+                        ego.speed = SimConfig.EGO_INIT_SPEED
 
-                frozen_positions = {v: (v.position[0], v.position[1])
-                                    for v in self.env.unwrapped.road.vehicles if v is not ego}
-
-                _, _, terminated, truncated, info = self.env.step(safe_action)
-
+                # 兜底
                 if ego.target_speed < 0.0: ego.target_speed = 0.0
                 if ego.speed < 0.0: ego.speed = 0.0
 
+                # 🏁 现在再让引擎步进（此时引擎会使用上面设定的 target_speed = 0.0 来演算）
+                _, _, terminated, truncated, info = self.env.step(safe_action)
+
+                # ===================== 【其他车辆坐标与速度锁死】 =====================
                 for v in self.env.unwrapped.road.vehicles:
-                    if v is not ego and v in frozen_positions:
-                        v.position[0] = frozen_positions[v][0]
-                        v.position[1] = frozen_positions[v][1]
-                        v.speed = 0.0
-                        if hasattr(v, 'target_speed'): v.target_speed = 0.0
+                    if v is not ego and v in frozen_y_positions:
+                        v.position[1] = frozen_y_positions[v]  # 锁死Y轴防变道
+                        v.heading = 0.0  # 锁死航向角防歪头杀
+                        # 移除了强行设置v.speed的代码，保留target_speed让IDM模型控制实际速度
+                        if hasattr(v, 'target_speed'):
+                            v.target_speed = SimConfig.OTHER_VEHICLE_SPEED
+                # =====================================================================
 
                 if info.get("crashed") or abs(p_data["ego_heading"]) > 1.5 or terminated or truncated:
                     reason = "碰撞" if info.get("crashed") else "失控/越界"
                     print(f"\n！！！系统重置 [{reason}] ！！！")
                     crash_gap = max(0.0, p_data['lane_data']['current']['dist'] - SimConfig.VEHICLE_LENGTH_COMP)
-                    print(f"快照 -> 自车速: {p_data['v_ego']:.1f}, 净距: {crash_gap:.1f}m, 航向角: {p_data['ego_heading']:.2f}")
+                    print(
+                        f"快照 -> 自车速: {p_data['v_ego']:.1f}, 净距: {crash_gap:.1f}m, 航向角: {p_data['ego_heading']:.2f}")
                     self.reset_env()
 
 if __name__ == "__main__":

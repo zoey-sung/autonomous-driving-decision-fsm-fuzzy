@@ -8,15 +8,18 @@ class Perception:
     def get_decision_data(self):
         ego = self.env.unwrapped.vehicle
         lane_data = {
-            "current": {"dist": 100.0, "v_lead": ego.speed},
-            "left": {"dist": 100.0, "v_lead": ego.speed},
-            "right": {"dist": 100.0, "v_lead": ego.speed}
+            "current": {"dist": 999.0, "v_lead": ego.speed},
+            "left": {"dist": 999.0, "v_lead": ego.speed},
+            "right": {"dist": 999.0, "v_lead": ego.speed}
         }
 
         for v in self.env.unwrapped.road.vehicles:
             if v is not ego:
                 d = v.position[0] - ego.position[0]
-                v_lane = v.lane_index[2]
+
+                # 【核心修复】：将这行 v_lane = v.lane_index[2] 替换为下面这行
+                # 用真实的物理 Y 坐标除以车道宽度，算出它实际到底在哪个车道
+                v_lane = int(round(v.position[1] / SimConfig.LANE_WIDTH))
 
                 if v_lane == ego.lane_index[2]:
                     if 0 < d < lane_data["current"]["dist"]:

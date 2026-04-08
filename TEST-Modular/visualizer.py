@@ -28,7 +28,7 @@ class Visualizer:
         img_pil = Image.fromarray(cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB))
         draw = ImageDraw.Draw(img_pil)
 
-        display_dist = max(0.0, dist - SimConfig.VEHICLE_LENGTH_COMP) if dist < 99.0 else 100.0
+        display_dist = max(0.0, dist - SimConfig.VEHICLE_LENGTH_COMP) if dist < 900.0 else 999.0
         # 【修复】直接使用 mss 即可，不再重复扣减车长补偿
         display_mss = max(0.0, mss)
 
