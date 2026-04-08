@@ -1,25 +1,22 @@
 import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
-
+from config import SimConfig
 
 class Visualizer:
     def __init__(self, window_name="Drive Monitor"):
         self.window_name = window_name
         cv2.namedWindow(self.window_name)
-
-        # 【新增】存储鼠标点击的像素坐标
         self.clicked_points = []
         cv2.setMouseCallback(self.window_name, self._mouse_callback)
 
         try:
             self.font = ImageFont.truetype("msyh.ttc", 20)
-            self.small_font = ImageFont.truetype("msyh.ttc", 14)  # 【新增】用于刻度尺的小号字体
+            self.small_font = ImageFont.truetype("msyh.ttc", 14)
         except:
             self.font = ImageFont.load_default()
             self.small_font = ImageFont.load_default()
 
-    # 【新增】OpenCV的鼠标点击回调函数
     def _mouse_callback(self, event, x, y, flags, param):
         if event == cv2.EVENT_LBUTTONDOWN:
             self.clicked_points.append((x, y))
@@ -31,57 +28,40 @@ class Visualizer:
         img_pil = Image.fromarray(cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB))
         draw = ImageDraw.Draw(img_pil)
 
-        # 【新增】把给用户的提示转换为“净距” (减去两车各一半长度共5米)
-        display_dist = max(0.0, dist - 5.0) if dist < 99.0 else 100.0
-        display_mss = max(0.0, mss - 5.0)
+        display_dist = max(0.0, dist - SimConfig.VEHICLE_LENGTH_COMP) if dist < 99.0 else 100.0
+        # 【修复】直接使用 mss 即可，不再重复扣减车长补偿
+        display_mss = max(0.0, mss)
 
-        # 【新增】暂停时的 UI 交互提示
         if paused:
             draw.text((screen_width // 2 - 180, 80), "⏸️ 仿真已暂停: 请使用鼠标点击车道放置障碍车", font=self.font,
                       fill=(0, 255, 255))
             draw.text((screen_width // 2 - 180, 110), "提示: 车辆放下后将立刻显示实时纵距", font=self.small_font,
                       fill=(200, 200, 200))
 
-        # ==========================================
-        # 【新增】绘制双侧 10 米间隔刻度尺
-        # ==========================================
         if lane_y_coords:
-            # 确定马路的上下边缘 Y 坐标
             top_y = lane_y_coords[0][1] - 30
             bottom_y = lane_y_coords[-1][1] + 30
 
-            # 计算屏幕当前能显示的最左和最右的“真实世界X坐标”
             start_x = ego_x - (screen_width / 2) / scaling
             end_x = ego_x + (screen_width / 2) / scaling
 
-            # 找到视野内第一个 10 的倍数
             first_tick = int((start_x // 10) * 10)
             for tick in range(first_tick, int(end_x) + 10, 10):
-                # 将真实的 10 米节点转换回屏幕的像素坐标
                 pixel_x = int((tick - ego_x) * scaling + (screen_width / 2))
 
-                # 画上方刻度线和文字
                 draw.line([(pixel_x, top_y), (pixel_x, top_y + 10)], fill=(255, 255, 255), width=2)
                 draw.text((pixel_x - 15, top_y - 20), f"{tick}m", font=self.small_font, fill=(200, 200, 200))
 
-                # 画下方刻度线和文字
                 draw.line([(pixel_x, bottom_y), (pixel_x, bottom_y - 10)], fill=(255, 255, 255), width=2)
                 draw.text((pixel_x - 15, bottom_y + 5), f"{tick}m", font=self.small_font, fill=(200, 200, 200))
 
-        # ==========================================
-        # 系统信息文本定义
-        # ==========================================
         info_lines = [
             f"系统状态: {state_name}",
             f"前方净距: {display_dist:.1f}m (安全底线: {display_mss:.1f}m)",
-            f"安全概率: {p_safe:.2f} (门限: 0.70)",
-            f"帧延迟: {delay_ms}ms (空格暂停, +/-调速, F键脱困)"  # 提示加上F键
+            f"安全概率: {p_safe:.2f} (门限: {SimConfig.P_SAFE_THRESHOLD:.2f})",
+            f"帧延迟: {delay_ms}ms (空格暂停, +/-调速, F键脱困)"
         ]
 
-        # ==========================================
-        # 【修改 1】第一步：先绘制车辆身上的悬浮文本 (底层)
-        # 这样当车辆移动到左上角时，文字会被后续的 HUD 背景盖住
-        # ==========================================
         if vehicle_list:
             for v in vehicle_list:
                 speed_text = f"{v['speed']:.0f} km/h"
@@ -92,9 +72,6 @@ class Visualizer:
                     dist_text = f"纵距: {v['long_dist']:.1f} m"
                     draw.text((v["x"] - 30, v["y"] - 20), dist_text, font=self.font, fill=(255, 0, 0))
 
-        # ==========================================
-        # 【修改 2】第二步：再绘制深灰色的 HUD 背景底板和文字 (顶层)
-        # ==========================================
         draw.rectangle([(10, 10), (420, 140)], fill=(30, 30, 30))
 
         if lane_y_coords:

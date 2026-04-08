@@ -1,13 +1,11 @@
 # perception.py
 from config import SimConfig
 
-
 class Perception:
     def __init__(self, env):
         self.env = env
 
     def get_decision_data(self):
-        """获取决策引擎需要的数据"""
         ego = self.env.unwrapped.vehicle
         lane_data = {
             "current": {"dist": 100.0, "v_lead": ego.speed},
@@ -40,33 +38,25 @@ class Perception:
         }
 
     def get_visual_data(self):
-        """获取可视化画图需要的数据"""
         vehicles_data = []
         ego = self.env.unwrapped.vehicle
         road = self.env.unwrapped.road
 
         for v in road.vehicles:
             rel_x = (v.position[0] - ego.position[0]) * SimConfig.SCALING + (SimConfig.SCREEN_WIDTH / 2)
+            rel_y = (v.position[1] - SimConfig.CENTER_LANE_Y) * SimConfig.SCALING + (SimConfig.SCREEN_HEIGHT / 2)
 
-            # ==========================================
-            # 【修改 3】将 Y 轴的基准从自车(ego.position[1]) 改为固定的中心点(4.0)
-            # ==========================================
-            rel_y = (v.position[1] - 4.0) * SimConfig.SCALING + (SimConfig.SCREEN_HEIGHT / 2)
-
-            # ==========================================
-            # 【新增】将中心距换算为真实物理净距
             center_dist = v.position[0] - ego.position[0]
             if center_dist > 0:
-                gap = max(0.0, center_dist - 5.0)  # 前车尾巴 到 自车车头
+                gap = max(0.0, center_dist - SimConfig.VEHICLE_LENGTH_COMP)
             else:
-                gap = min(0.0, center_dist + 5.0)  # 后车车头 到 自车车尾
-            # ==========================================
+                gap = min(0.0, center_dist + SimConfig.VEHICLE_LENGTH_COMP)
 
             vehicles_data.append({
                 "x": rel_x,
                 "y": rel_y,
                 "speed": v.speed * 3.6,
                 "is_ego": (v == ego),
-                "long_dist": gap  # 传给 UI 的直接是净距了
+                "long_dist": gap
             })
         return vehicles_data

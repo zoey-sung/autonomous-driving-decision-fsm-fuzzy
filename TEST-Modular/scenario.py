@@ -2,18 +2,22 @@
 from config import SimConfig
 from highway_env.vehicle.behavior import IDMVehicle
 
-
 class ScenarioManager:
     def __init__(self, env):
         self.env = env
         self.custom_obstacles = []
 
     def setup_from_cli(self):
-        """在终端提供交互式指南，接收用户自定义的障碍物位置"""
+        # 【新增】判断是否开启交互模式
+        if not SimConfig.ENABLE_CLI_SETUP:
+            print(f"\n🚀 [系统] 跳过终端交互，使用默认障碍物配置: {SimConfig.DEFAULT_OBSTACLES}")
+            self.custom_obstacles = SimConfig.DEFAULT_OBSTACLES.copy()
+            return
+
         print("\n" + "=" * 50)
         print("🚦 障碍车初始化设置 (交互模式)")
         print(f"自车默认位于 [1]号车道 (中间), 速度 {SimConfig.EGO_INIT_SPEED} m/s")
-        print("车道编号: [0]=左侧, [1]=中间, [2]=右侧")
+        print(f"车道编号: [0]至[{SimConfig.LANES_COUNT - 1}]")
         print("-" * 50)
 
         while True:
@@ -39,8 +43,8 @@ class ScenarioManager:
             try:
                 lane_str, dist_str = user_in.split(',')
                 lane_id, dist = int(lane_str.strip()), float(dist_str.strip())
-                if lane_id not in [0, 1, 2] or dist <= 0:
-                    print("❌ 车道须为0-2，距离须>0！")
+                if lane_id not in range(SimConfig.LANES_COUNT) or dist <= 0:
+                    print(f"❌ 车道须为0-{SimConfig.LANES_COUNT-1}，距离须>0！")
                     continue
                 self.custom_obstacles.append((lane_id, dist))
                 print(f"   [已记录] -> 车道: {lane_id}, 前方距离: {dist}m")
@@ -50,7 +54,6 @@ class ScenarioManager:
         print(f"\n✅ 配置完成！启动仿真...\n" + "=" * 50)
 
     def spawn_static_obstacles(self):
-        """根据CLI配置生成初始障碍物"""
         road = self.env.unwrapped.road
         ego = self.env.unwrapped.vehicle
         ego_x = ego.position[0]
@@ -65,19 +68,13 @@ class ScenarioManager:
             road.vehicles.append(v)
 
     def spawn_at_pixel(self, px, py):
-        """将鼠标像素点击转换为实车空投"""
         ego = self.env.unwrapped.vehicle
         config = self.env.unwrapped.config
 
-        # X 轴依然跟随自车，这样可以往前/往后扔车
         world_x = (px - config["screen_width"] / 2) / config["scaling"] + ego.position[0]
+        world_y = (py - config["screen_height"] / 2) / config["scaling"] + SimConfig.CENTER_LANE_Y
 
-        # ==========================================
-        # 【修改 4】Y 轴计算基于锁死的中心车道(4.0)，不再加上 ego.position[1]
-        # ==========================================
-        world_y = (py - config["screen_height"] / 2) / config["scaling"] + 4.0
-
-        lane_idx = int(round(world_y / 4.0))
+        lane_idx = int(round(world_y / SimConfig.LANE_WIDTH))
         lane_idx = max(0, min(SimConfig.LANES_COUNT - 1, lane_idx))
 
         road = self.env.unwrapped.road
