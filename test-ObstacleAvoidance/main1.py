@@ -12,7 +12,7 @@ TEST_CONFIG = {
     "other_vehicle_speed": 0,
     "safe_distance_mss": 5.0,
     "fuzzy_margin_scale": 5.0,
-    "vehicles_count": 0,  # 【关键修改】将原来的 20 改为 0，彻底关闭底层随机刷车机制
+    "vehicles_count": 20,  # 【关键修改】将原来的 20 改为 0，彻底关闭底层随机刷车机制
     "ego_spacing": 2.0,
     "lanes_count": 3
 }
@@ -183,15 +183,23 @@ class AutoDriveSystem:
         config = self.env.unwrapped.config
         scaling = config["scaling"]
         center_x = ego.position[0]
+        center_y = ego.position[1]  # 【新增】获取自车的实时 Y 坐标
 
         for v in road.vehicles:
             rel_x = (v.position[0] - center_x) * scaling + (config["screen_width"] / 2)
-            rel_y = v.position[1] * scaling + (config["screen_height"] / 2)
+
+            # 【关键修复】文字的 Y 坐标减去自车Y坐标，保持相对静止
+            rel_y = (v.position[1] - center_y) * scaling + (config["screen_height"] / 2)
+
+            # 【新增】明确计算纯纵向距离（X轴方向的距离）
+            longitudinal_dist = v.position[0] - ego.position[0]
+
             vehicles_data.append({
                 "x": rel_x,
                 "y": rel_y,
                 "speed": v.speed * 3.6,
-                "is_ego": (v == ego)
+                "is_ego": (v == ego),
+                "long_dist": longitudinal_dist  # 【新增】将纵距传入可视化字典
             })
         return vehicles_data
 
@@ -226,9 +234,18 @@ class AutoDriveSystem:
             state_str = self.brain.current_state.value
             current_dist = p_data["lane_data"]["current"]["dist"]
 
+            # 【修复】让车道号的 Y 坐标减去自车的 Y 坐标，实现与物理车道的动态绑定
+            config = self.env.unwrapped.config
+            lane_y_coords = [
+                (i, ((i * 4) - ego.position[1]) * config["scaling"] + (config["screen_height"] / 2))
+                for i in range(TEST_CONFIG["lanes_count"])
+            ]
+
+            # 传入 lane_y_coords
             canvas = self.viz.draw_info(
                 frame, state_str, self.frame_delay, dist=current_dist,
-                mss=mss, p_safe=p_safe, paused=self.paused, vehicle_list=v_list
+                mss=mss, p_safe=p_safe, paused=self.paused, vehicle_list=v_list,
+                lane_y_coords=lane_y_coords  # 【新增参数】
             )
             canvas = self.viz.draw_detections(canvas, yolo_results)
             self.viz.show(canvas)
